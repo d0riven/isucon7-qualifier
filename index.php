@@ -64,6 +64,46 @@ function generateHaveReadRedisKey($userId, $channelId)
 
 }
 
+function generateUnreadCountRedisKey($userId, $channelId)
+{
+    return 'message_count_' . $userId . '_' . $channelId;
+}
+
+function cacheUnreadCount(Client $redisClient, $userId, $channelId, $cnt)
+{
+    $redisClient->set(generateUnreadCountRedisKey($userId, $channelId), $cnt);
+}
+
+function incrementUnreadCountAllUserForAddMessage(PDO $dbh, Client $redisClient, $channelId)
+{
+    foreach(fetchUserIds($dbh) as $userId) {
+        $redisClient->incr(generateUnreadCountRedisKey($userId, $channelId));
+    }
+}
+
+function cacheUnreadCountAllUserForCreateChannel(PDO $dbh, Client $redisClient, $channelId)
+{
+    foreach(fetchUserIds($dbh) as $userId) {
+        cacheUnreadCount($redisClient, $userId, $channelId, 0);
+    }
+}
+
+/**
+ * @param $dbh
+ * @return mixed
+ */
+function fetchMessageCountEachChannelId(PDO $dbh)
+{
+    $stmt = $dbh->query("SELECT channel_id, COUNT(*) as cnt FROM message GROUP BY channel_id");
+    return $stmt->fetchAll();
+}
+
+function fetchUserIds(PDO $dbh)
+{
+    $stmt = $dbh->query("SELECT id FROM user");
+    return array_column($stmt->fetchAll(), 'id');
+}
+
 $app = new \Slim\App();
 
 $container = $app->getContainer();
@@ -86,7 +126,15 @@ $app->get('/initialize', function (Request $request, Response $response) {
     $dbh->query("DELETE FROM channel WHERE id > 10");
     $dbh->query("DELETE FROM message WHERE id > 10000");
     $dbh->query("DELETE FROM haveread");
-    getRedis()->flushall();
+    $redisClient = getRedis();
+    $redisClient->flushall();
+
+    $channels = fetchMessageCountEachChannelId($dbh);
+    foreach(range(1, 1000) as $userId) {
+        foreach($channels as $channelRow) {
+            cacheUnreadCount($redisClient, $userId, $channelRow['channel_id'], $channelRow['cnt']);
+        }
+    }
     $response->withStatus(204);
 });
 
@@ -97,10 +145,11 @@ function db_get_user($dbh, $userId)
     return $stmt->fetch();
 }
 
-function db_add_message($dbh, $channelId, $userId, $message)
+function db_add_message(PDO $dbh, $channelId, $userId, $message)
 {
     $stmt = $dbh->prepare("INSERT INTO message (channel_id, user_id, content, created_at) VALUES (?, ?, ?, NOW())");
     $stmt->execute([$channelId, $userId, $message]);
+    incrementUnreadCountAllUserForAddMessage($dbh, getRedis(), $channelId);
 }
 
 $loginRequired = function (Request $request, Response $response, $next) use ($container) {
@@ -138,13 +187,21 @@ function register($dbh, $userName, $password)
 {
     $salt = random_string(20);
     $passDigest = sha1(utf8_encode($salt . $password));
+
     $stmt = $dbh->prepare(
         "INSERT INTO user (name, salt, password, display_name, avatar_icon, created_at) ".
         "VALUES (?, ?, ?, ?, 'default.png', NOW())"
     );
     $stmt->execute([$userName, $salt, $passDigest, $userName]);
     $stmt = $dbh->query("SELECT LAST_INSERT_ID() AS last_insert_id");
-    return $stmt->fetch()['last_insert_id'];
+    $userId = $stmt->fetch()['last_insert_id'];
+
+    $channels = fetchMessageCountEachChannelId($dbh);
+    foreach ($channels as $channel) {
+        cacheUnreadCount(getRedis(), $userId, $channel['channel_id'], $channel['cnt']);
+    }
+
+    return $userId;
 }
 
 $app->get('/', function (Request $request, Response $response) {
@@ -272,14 +329,7 @@ $app->get('/message', function (Request $request, Response $response) {
     foreach ($rows as $row) {
         $maxMessageId = max($maxMessageId, $row['id']);
     }
-    $stmt = $dbh->prepare(
-        "INSERT INTO haveread (user_id, channel_id, message_id, updated_at, created_at) ".
-        "VALUES (?, ?, ?, NOW(), NOW()) ".
-        "ON DUPLICATE KEY UPDATE message_id = ?, updated_at = NOW()"
-    );
-    $stmt->execute([$userId, $channelId, $maxMessageId, $maxMessageId]);
-
-    getRedis()->set(generateHaveReadRedisKey($userId, $channelId), $maxMessageId);
+    getRedis()->set(generateUnreadCountRedisKey($userId, $channelId), 0);
 
     return $response->withJson($res);
 });
@@ -289,8 +339,6 @@ $app->get('/fetch', function (Request $request, Response $response) {
     if (!$userId) {
         return $response->withStatus(403);
     }
-
-    sleep(1); // これいる？
 
     $dbh = getPDO();
     $stmt = $dbh->query('SELECT id FROM channel');
@@ -303,30 +351,11 @@ $app->get('/fetch', function (Request $request, Response $response) {
     $redisClient = getRedis();
     $res = [];
     foreach ($channelIds as $channelId) {
-        $redisKey = generateHaveReadRedisKey($userId, $channelId);
         $row = null;
-        if($redisClient->exists($redisKey)) {
-            $row['message_id'] = $redisClient->get($redisKey);
-        }
-        if ($row) {
-            $lastMessageId = $row['message_id'];
-            $stmt = $dbh->prepare(
-                "SELECT COUNT(*) as cnt ".
-                "FROM message ".
-                "WHERE channel_id = ? AND ? < id"
-            );
-            $stmt->execute([$channelId, $lastMessageId]);
-        } else {
-            $stmt = $dbh->prepare(
-                "SELECT COUNT(*) as cnt ".
-                "FROM message ".
-                "WHERE channel_id = ?"
-            );
-            $stmt->execute([$channelId]);
-        }
+        $count = $redisClient->get(generateUnreadCountRedisKey($userId, $channelId));
         $r = [];
         $r['channel_id'] = $channelId;
-        $r['unread'] = (int)$stmt->fetch()['cnt'];
+        $r['unread'] = (int)$count;
         $res[] = $r;
     }
 
@@ -439,6 +468,9 @@ $app->post('/add_channel', function (Request $request, Response $response) {
     );
     $stmt->execute([$name, $description]);
     $channelId = $dbh->lastInsertId();
+
+    cacheUnreadCountAllUserForCreateChannel($dbh, getRedis(), $channelId);
+
     return $response->withRedirect("/channel/$channelId", 303);
 })->add($loginRequired);
 
