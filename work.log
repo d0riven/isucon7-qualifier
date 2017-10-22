@@ -1,0 +1,6 @@
+* 監視の追加
+    + mackerel
+    + newrelic
+* nginxのunixドメインソケット化
+* iconsのパーミッションでこけているのを修正した.(ユニックスドメインソケットでuserを変えたために起きた）
+    + sudo chown -R isucon:isucon /var/lib/nginx/fastcgi
