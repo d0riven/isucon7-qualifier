@@ -58,6 +58,12 @@ function generateIconsRedisKey($filename)
     return 'icons_' . $filename;
 }
 
+function generateHaveReadRedisKey($userId, $channelId)
+{
+    return 'haveread_' . $userId . '_' . $channelId;
+
+}
+
 $app = new \Slim\App();
 
 $container = $app->getContainer();
@@ -272,6 +278,9 @@ $app->get('/message', function (Request $request, Response $response) {
         "ON DUPLICATE KEY UPDATE message_id = ?, updated_at = NOW()"
     );
     $stmt->execute([$userId, $channelId, $maxMessageId, $maxMessageId]);
+
+    getRedis()->set(generateHaveReadRedisKey($userId, $channelId), $maxMessageId);
+
     return $response->withJson($res);
 });
 
@@ -281,7 +290,7 @@ $app->get('/fetch', function (Request $request, Response $response) {
         return $response->withStatus(403);
     }
 
-    sleep(1);
+    sleep(1); // これいる？
 
     $dbh = getPDO();
     $stmt = $dbh->query('SELECT id FROM channel');
@@ -291,15 +300,14 @@ $app->get('/fetch', function (Request $request, Response $response) {
         $channelIds[] = (int)$row['id'];
     }
 
+    $redisClient = getRedis();
     $res = [];
     foreach ($channelIds as $channelId) {
-        $stmt = $dbh->prepare(
-            "SELECT * ".
-            "FROM haveread ".
-            "WHERE user_id = ? AND channel_id = ?"
-        );
-        $stmt->execute([$userId, $channelId]);
-        $row = $stmt->fetch();
+        $redisKey = generateHaveReadRedisKey($userId, $channelId);
+        $row = null;
+        if($redisClient->exists($redisKey)) {
+            $row['message_id'] = $redisClient->get($redisKey);
+        }
         if ($row) {
             $lastMessageId = $row['message_id'];
             $stmt = $dbh->prepare(
