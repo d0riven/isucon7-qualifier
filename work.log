@@ -1,6 +1,18 @@
-* 監視の追加
+## 13:00 ~ (初期設定)
+
+* 初回ベンチマーク実行 (score : 6271)
+* 監視の追加 (score : 3914~4136)
     + mackerel
     + newrelic
-* nginxのunixドメインソケット化
+* gitの追加やMakefileの作成など
+* nginxのunixドメインソケット化(score : 6443)
 * iconsのパーミッションでこけているのを修正した.(ユニックスドメインソケットでuserを変えたために起きた）
     + sudo chown -R isucon:isucon /var/lib/nginx/fastcgi
+
+## 15:00 ~
+* newrelicを見て,/icons/*, /fetch に時間がかかっているので/iconsから直すことにした
+* icons/のDBの参照に時間がかかっているのでインデックス貼った (score : 6526)
+    + ユニークインデックスを貼ろうとしたら落ちた。コードを見る限り１行しか取得しておらず、違和感を覚える。
+    + disk ioは減ったがインデックス貼ったが行数が少ないためかあまり効果はなかった。
+    + create index name_idx ON image (name);
+*
