@@ -475,6 +475,7 @@ $app->post('/profile', function (Request $request, Response $response) {
         $stmt->bindParam(1, $avatarName);
         $stmt->bindParam(2, $avatarData, PDO::PARAM_LOB);
         $stmt->execute();
+        getRedis()->del(generateIconsRedisKey($avatarName));
         $stmt = $pdo->prepare("UPDATE user SET avatar_icon = ? WHERE id = ?");
         $stmt->execute([$avatarName, $userId]);
     }
