@@ -9,6 +9,7 @@ use Dflydev\FigCookies\FigResponseCookies;
 use Dflydev\FigCookies\FigRequestCookies;
 use Dflydev\FigCookies\Cookie;
 use Dflydev\FigCookies\SetCookie;
+use Predis\Client;
 
 date_default_timezone_set('Asia/Tokyo');
 
@@ -41,6 +42,22 @@ function getPDO()
     return $pdo;
 }
 
+function getRedis()
+{
+    static $redis = null;
+    if (!is_null($redis)) {
+        return $redis;
+    }
+
+    $redis = new Client('tcp:127.0.0.1:6379');
+    return $redis;
+}
+
+function generateIconsRedisKey($filename)
+{
+    return 'icons_' . $filename;
+}
+
 $app = new \Slim\App();
 
 $container = $app->getContainer();
@@ -63,6 +80,7 @@ $app->get('/initialize', function (Request $request, Response $response) {
     $dbh->query("DELETE FROM channel WHERE id > 10");
     $dbh->query("DELETE FROM message WHERE id > 10000");
     $dbh->query("DELETE FROM haveread");
+    getRedis()->flushall();
     $response->withStatus(204);
 });
 
@@ -486,9 +504,17 @@ function ext2mime($ext)
 
 $app->get('/icons/{filename}', function (Request $request, Response $response) {
     $filename = $request->getAttribute('filename');
-    $stmt = getPDO()->prepare("SELECT * FROM image WHERE name = ?");
-    $stmt->execute([$filename]);
-    $row = $stmt->fetch();
+    $redisClient = getRedis();
+    $redisKey = generateIconsRedisKey($filename);
+    $row = [];
+    if($redisClient->exists($redisKey)) {
+        $row['data'] = $redisClient->get($redisKey);
+    } else {
+        $stmt = getPDO()->prepare("SELECT * FROM image WHERE name = ?");
+        $stmt->execute([$filename]);
+        $row = $stmt->fetch();
+        $redisClient->set($redisKey, $row['data']);
+    }
 
     $ext = pathinfo($filename, PATHINFO_EXTENSION);
     $mime = ext2mime($ext);
