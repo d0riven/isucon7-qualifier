@@ -49,7 +49,8 @@ function getRedis()
         return $redis;
     }
 
-    $redis = new Client('tcp:127.0.0.1:6379');
+    $redis = new Redis();
+    $redis->connect('127.0.0.1', 6379);
     return $redis;
 }
 
@@ -69,19 +70,19 @@ function generateUnreadCountRedisKey($userId, $channelId)
     return 'message_count_' . $userId . '_' . $channelId;
 }
 
-function cacheUnreadCount(Client $redisClient, $userId, $channelId, $cnt)
+function cacheUnreadCount(Redis $redisClient, $userId, $channelId, $cnt)
 {
     $redisClient->set(generateUnreadCountRedisKey($userId, $channelId), $cnt);
 }
 
-function incrementUnreadCountAllUserForAddMessage(PDO $dbh, Client $redisClient, $channelId)
+function incrementUnreadCountAllUserForAddMessage(PDO $dbh, Redis $redisClient, $channelId)
 {
     foreach(fetchUserIds($dbh) as $userId) {
         $redisClient->incr(generateUnreadCountRedisKey($userId, $channelId));
     }
 }
 
-function cacheUnreadCountAllUserForCreateChannel(PDO $dbh, Client $redisClient, $channelId)
+function cacheUnreadCountAllUserForCreateChannel(PDO $dbh, Redis $redisClient, $channelId)
 {
     foreach(fetchUserIds($dbh) as $userId) {
         cacheUnreadCount($redisClient, $userId, $channelId, 0);
@@ -102,6 +103,26 @@ function fetchUserIds(PDO $dbh)
 {
     $stmt = $dbh->query("SELECT id FROM user");
     return array_column($stmt->fetchAll(), 'id');
+}
+
+/**
+ * @param $filename
+ * @param $row
+ */
+function putAvatarImageFile($filename, $imageData)
+{
+    file_put_contents('/home/isucon/isubata/webapp/public/icons/' . $filename, $imageData);
+}
+
+/**
+ * @param $dbh
+ */
+function generateIconImageByDb($dbh)
+{
+    foreach (range(1, 1001) as $id) {
+        $icon = $dbh->query("SELECT name, data FROM image WHERE id = $id")->fetch();
+        putAvatarImageFile($icon['name'], $icon['data']);
+    }
 }
 
 $app = new \Slim\App();
@@ -511,13 +532,15 @@ $app->post('/profile', function (Request $request, Response $response) {
     }
 
     if ($avatarName && $avatarData) {
-        $stmt = $pdo->prepare("INSERT INTO image (name, data) VALUES (?, ?)");
-        $stmt->bindParam(1, $avatarName);
-        $stmt->bindParam(2, $avatarData, PDO::PARAM_LOB);
-        $stmt->execute();
-        getRedis()->del(generateIconsRedisKey($avatarName));
+//        $stmt = $pdo->prepare("INSERT INTO image (name, data) VALUES (?, ?)");
+//        $stmt->bindParam(1, $avatarName);
+//        $stmt->bindParam(2, $avatarData, PDO::PARAM_LOB);
+//        $stmt->execute();
+//        getRedis()->del(generateIconsRedisKey($avatarName));
         $stmt = $pdo->prepare("UPDATE user SET avatar_icon = ? WHERE id = ?");
         $stmt->execute([$avatarName, $userId]);
+
+        putAvatarImageFile($avatarName, $avatarData);
     }
 
     if ($displayName) {
@@ -543,6 +566,7 @@ function ext2mime($ext)
     }
 }
 
+/*
 $app->get('/icons/{filename}', function (Request $request, Response $response) {
     $filename = $request->getAttribute('filename');
     $redisClient = getRedis();
@@ -560,11 +584,13 @@ $app->get('/icons/{filename}', function (Request $request, Response $response) {
     $ext = pathinfo($filename, PATHINFO_EXTENSION);
     $mime = ext2mime($ext);
 
+    putAvatarImageFile($filename, $row['data']);
     if ($row && $mime) {
         $response->write($row['data']);
         return $response->withHeader('Content-type', $mime);
     }
     return $response->withStatus(404);
 });
+*/
 
 $app->run();
